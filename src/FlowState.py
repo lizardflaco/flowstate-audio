@@ -302,6 +302,29 @@ class ProjectConfig:
     image_transition_seconds: float = 3.0
     output_resolution: str = "1920x1080"
     fps: int = 30
+    
+    # YouTube metadata
+    youtube_title: str = ""
+    youtube_description: str = ""
+    youtube_tags: str = ""
+    youtube_category: str = "Music"
+    
+    # Voiceover/Guided meditation
+    voiceover_script: str = ""
+    voiceover_position: str = "intro"  # intro, throughout, none
+    voiceover_voice: str = "default"
+    
+    def save_to_file(self, filepath: str):
+        """Save configuration to JSON file"""
+        with open(filepath, 'w') as f:
+            json.dump(asdict(self), f, indent=2)
+    
+    @staticmethod
+    def load_from_file(filepath: str) -> 'ProjectConfig':
+        """Load configuration from JSON file"""
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        return ProjectConfig(**data)
 
 
 class FFmpegAnalyzer:
@@ -1205,6 +1228,7 @@ class FlowStateWindow(QMainWindow):
             ("binaural", "🧠", "Binaural Beats"),
             ("settings", "🎚️", "Crossfade & Mix"),
             ("video", "🎬", "Video Options"),
+            ("metadata", "📝", "YouTube & Export"),
         ]
         
         for page_id, icon, label in pages:
@@ -1232,6 +1256,36 @@ class FlowStateWindow(QMainWindow):
             btn.clicked.connect(lambda checked, pid=page_id: self.navigate_to(pid))
             layout.addWidget(btn)
             self.nav_buttons[page_id] = btn
+        
+        layout.addStretch()
+        
+        # Template buttons
+        template_label = QLabel("Templates")
+        template_label.setStyleSheet("color: #6b7280; font-size: 11px; padding-top: 16px;")
+        layout.addWidget(template_label)
+        
+        save_template_btn = QPushButton("💾 Save Template")
+        save_template_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1e1e2e;
+                color: #9ca3af;
+                padding: 8px 12px;
+                border: none;
+                border-radius: 6px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #252542;
+                color: #e8e8f0;
+            }
+        """)
+        save_template_btn.clicked.connect(self.save_template)
+        layout.addWidget(save_template_btn)
+        
+        load_template_btn = QPushButton("📂 Load Template")
+        load_template_btn.setStyleSheet(save_template_btn.styleSheet())
+        load_template_btn.clicked.connect(self.load_template)
+        layout.addWidget(load_template_btn)
         
         layout.addStretch()
         
@@ -1273,6 +1327,15 @@ class FlowStateWindow(QMainWindow):
         
         # Page 2: Binaural
         self.stack.addWidget(self._create_binaural_page())
+        
+        # Page 3: Settings
+        self.stack.addWidget(self._create_settings_page())
+        
+        # Page 4: Video
+        self.stack.addWidget(self._create_video_page())
+        
+        # Page 5: Metadata
+        self.stack.addWidget(self._create_metadata_page())
         
         # Page 3: Settings
         self.stack.addWidget(self._create_settings_page())
@@ -1852,7 +1915,7 @@ class FlowStateWindow(QMainWindow):
     
     def navigate_to(self, page_id: str):
         """Navigate to a specific page"""
-        pages = {"files": 0, "binaural": 1, "settings": 2, "video": 3}
+        pages = {"files": 0, "binaural": 1, "settings": 2, "video": 3, "metadata": 4}
         if page_id in pages:
             self.stack.setCurrentIndex(pages[page_id])
             
@@ -1975,6 +2038,11 @@ class FlowStateWindow(QMainWindow):
         self.config.intro_text = self.intro_text.toPlainText()
         self.config.intro_duration_seconds = self.intro_dur.value()
         
+        # YouTube metadata
+        self.config.youtube_title = self.youtube_title.text()
+        self.config.youtube_description = self.youtube_description.toPlainText()
+        self.config.youtube_tags = self.youtube_tags.text()
+        
         # Disable UI during processing
         self.export_btn.setEnabled(False)
         self.export_btn.setText("Processing...")
@@ -2037,11 +2105,55 @@ class FlowStateWindow(QMainWindow):
         if msg.clickedButton() == open_btn:
             subprocess.run(["open", str(EXPORTS_DIR)])
         
+        # Export YouTube metadata as text file
+        if self.export_txt_checkbox.isChecked():
+            self._export_youtube_metadata()
+        
         # Reset UI
         self.export_btn.setEnabled(True)
         self.export_btn.setText("✨ Create Master Track")
         self.status_panel.hide_panel()
         self.statusBar().showMessage("Ready")
+    
+    def _export_youtube_metadata(self):
+        """Export YouTube metadata as a text file"""
+        safe_name = "".join(c for c in self.config.project_name if c.isalnum() or c in "-_ ").strip()
+        if not safe_name:
+            safe_name = "flowstate_export"
+        
+        metadata_file = EXPORTS_DIR / f"{safe_name}_youtube_metadata.txt"
+        
+        content = f"""YOUTUBE UPLOAD METADATA
+{'='*50}
+
+TITLE:
+{self.config.youtube_title or self.config.project_name}
+
+DESCRIPTION:
+{self.config.youtube_description}
+
+TAGS:
+{self.config.youtube_tags}
+
+CATEGORY:
+Music
+
+SETTINGS:
+• Made for kids: No
+• License: Standard YouTube License
+• Comments: Allow all comments
+
+AUDIO SPECS:
+• Duration: {self.config.target_duration_minutes} minutes
+• Binaural: {BINAURAL_PRESETS.get(self.config.binaural_preset, {}).get('name', 'Custom')}
+• Loudness: {self.config.target_loudness_lufs} LUFS
+
+Exported by FlowState Audio
+https://github.com/lizardflaco/flowstate-audio
+"""
+        
+        with open(metadata_file, 'w', encoding='utf-8') as f:
+            f.write(content)
     
     def processing_error(self, error_msg: str):
         """Handle processing error"""
@@ -2057,6 +2169,173 @@ class FlowStateWindow(QMainWindow):
         self.export_btn.setEnabled(True)
         self.export_btn.setText("✨ Create Master Track")
         self.statusBar().showMessage("Error occurred")
+
+    def _create_metadata_page(self) -> QWidget:
+        """Create the YouTube metadata and export options page"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(24)
+        layout.setContentsMargins(32, 32, 32, 32)
+        
+        # Header
+        header = QLabel("YouTube & Export")
+        header.setStyleSheet("color: #e8e8f0; font-size: 28px; font-weight: 600;")
+        layout.addWidget(header)
+        
+        desc = QLabel("Add metadata for YouTube and export options.")
+        desc.setStyleSheet("color: #6b7280; font-size: 14px;")
+        layout.addWidget(desc)
+        
+        # YouTube Title
+        title_group = QGroupBox("YouTube Title")
+        title_group.setStyleSheet("""
+            QGroupBox {
+                color: #8B5CF6;
+                font-weight: 600;
+                border: 1px solid #1e1e2e;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 12px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 8px;
+            }
+        """)
+        title_layout = QVBoxLayout(title_group)
+        
+        self.youtube_title = QLineEdit()
+        self.youtube_title.setPlaceholderText("e.g., 8 Hour Deep Sleep Music with Delta Waves")
+        self.youtube_title.setStyleSheet("""
+            QLineEdit {
+                background-color: #1e1e2e;
+                color: #e8e8f0;
+                border: 1px solid #2d2d3d;
+                border-radius: 6px;
+                padding: 8px 12px;
+            }
+        """)
+        title_layout.addWidget(self.youtube_title)
+        
+        title_tip = QLabel("💡 Include duration and key benefit in the title")
+        title_tip.setStyleSheet("color: #6b7280; font-size: 11px;")
+        title_layout.addWidget(title_tip)
+        
+        layout.addWidget(title_group)
+        
+        # YouTube Description
+        desc_group = QGroupBox("YouTube Description")
+        desc_group.setStyleSheet(title_group.styleSheet())
+        desc_layout = QVBoxLayout(desc_group)
+        
+        self.youtube_description = QTextEdit()
+        self.youtube_description.setPlaceholderText("""Welcome to this deep sleep meditation...
+
+🎵 Benefits:
+• Deep sleep and relaxation
+• Stress relief
+• Calm mind
+
+🧠 Binaural Beats:
+This track uses Delta waves (2.5 Hz) to help you achieve deep sleep.
+
+💤 Best used with:
+• Headphones for binaural effect
+• Low to moderate volume
+• As you prepare for sleep
+
+#SleepMusic #BinauralBeats #DeepSleep""")
+        self.youtube_description.setMaximumHeight(200)
+        self.youtube_description.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e2e;
+                color: #e8e8f0;
+                border: 1px solid #2d2d3d;
+                border-radius: 6px;
+                padding: 8px;
+            }
+        """)
+        desc_layout.addWidget(self.youtube_description)
+        
+        desc_tip = QLabel("💡 Include timestamps, benefits, and hashtags")
+        desc_tip.setStyleSheet("color: #6b7280; font-size: 11px;")
+        desc_layout.addWidget(desc_tip)
+        
+        layout.addWidget(desc_group)
+        
+        # Tags
+        tags_group = QGroupBox("Tags (comma separated)")
+        tags_group.setStyleSheet(title_group.styleSheet())
+        tags_layout = QVBoxLayout(tags_group)
+        
+        self.youtube_tags = QLineEdit()
+        self.youtube_tags.setPlaceholderText("sleep music, binaural beats, delta waves, deep sleep, meditation, relaxation")
+        self.youtube_tags.setStyleSheet(self.youtube_title.styleSheet())
+        tags_layout.addWidget(self.youtube_tags)
+        
+        layout.addWidget(tags_group)
+        
+        # Export Options
+        export_group = QGroupBox("Export Options")
+        export_group.setStyleSheet(title_group.styleSheet())
+        export_layout = QVBoxLayout(export_group)
+        
+        self.export_txt_checkbox = QCheckBox("Export YouTube metadata as .txt file")
+        self.export_txt_checkbox.setChecked(True)
+        self.export_txt_checkbox.setStyleSheet("color: #e8e8f0;")
+        export_layout.addWidget(self.export_txt_checkbox)
+        
+        layout.addWidget(export_group)
+        
+        layout.addStretch()
+        return page
+    
+    def save_template(self):
+        """Save current configuration as a template"""
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Template", str(Path.home() / "Desktop"),
+            "FlowState Templates (*.flowstate)"
+        )
+        if filename:
+            # Update config from UI
+            self.config.project_name = self.project_name.text()
+            self.config.youtube_title = self.youtube_title.text()
+            self.config.youtube_description = self.youtube_description.toPlainText()
+            self.config.youtube_tags = self.youtube_tags.text()
+            
+            self.config.save_to_file(filename)
+            QMessageBox.information(self, "Template Saved", f"Template saved to:\n{filename}")
+    
+    def load_template(self):
+        """Load a saved template"""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Load Template", str(Path.home() / "Desktop"),
+            "FlowState Templates (*.flowstate)"
+        )
+        if filename:
+            try:
+                self.config = ProjectConfig.load_from_file(filename)
+                
+                # Update UI
+                self.project_name.setText(self.config.project_name)
+                self.youtube_title.setText(self.config.youtube_title)
+                self.youtube_description.setText(self.config.youtube_description)
+                self.youtube_tags.setText(self.config.youtube_tags)
+                
+                # Update other UI elements
+                self.preset_combo.setCurrentIndex(
+                    self.preset_combo.findData(self.config.binaural_preset)
+                )
+                self.base_freq.setValue(self.config.binaural_base_freq)
+                self.beat_freq.setValue(self.config.binaural_beat_freq)
+                self.volume_slider.setValue(int(self.config.binaural_volume_db))
+                self.crossfade_spin.setValue(self.config.crossfade_seconds)
+                self.loudness_spin.setValue(self.config.target_loudness_lufs)
+                
+                QMessageBox.information(self, "Template Loaded", "Template loaded successfully!")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load template:\n{str(e)}")
 
 
 def main():
