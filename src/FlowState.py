@@ -597,13 +597,20 @@ class AudioProcessor(QThread):
         self.finished.emit(results)
     
     def _build_sequenced_audio(self) -> str:
-        """Crossfade tracks together"""
+        """Crossfade tracks together with safe duration calculations"""
         if len(self.tracks) == 1:
             # Single track: just normalize
             output = str(TEMP_DIR / "sequenced.wav")
             self._normalize_track(self.tracks[0].path, output)
             self.temp_files.append(output)
             return output
+        
+        # Calculate safe crossfade duration based on shortest track
+        min_duration = min(t.duration for t in self.tracks)
+        # Crossfade can't be more than half the shortest track (need overlap)
+        safe_crossfade = min(self.config.crossfade_seconds, min_duration / 2, 4.0)
+        
+        self.emit_progress(f"Using {safe_crossfade:.1f}s crossfade (limited by track lengths)", 20)
         
         # Build filter complex for multiple tracks
         inputs = []
@@ -631,18 +638,15 @@ class AudioProcessor(QThread):
             else:
                 filter_parts.append(f"[{i}:a]anull[a{i}]")
         
-        # Crossfade chain
+        # Crossfade chain with safe duration
         for i in range(n - 1):
-            duration = self.tracks[i].duration
-            offset = duration - self.config.crossfade_seconds
-            
             if i == 0:
                 filter_parts.append(
-                    f"[a{i}][a{i+1}]acrossfade=d={self.config.crossfade_seconds}:c1=tri:c2=tri[cf{i}]"
+                    f"[a{i}][a{i+1}]acrossfade=d={safe_crossfade}:c1=tri:c2=tri[cf{i}]"
                 )
             else:
                 filter_parts.append(
-                    f"[cf{i-1}][a{i+1}]acrossfade=d={self.config.crossfade_seconds}:c1=tri:c2=tri[cf{i}]"
+                    f"[cf{i-1}][a{i+1}]acrossfade=d={safe_crossfade}:c1=tri:c2=tri[cf{i}]"
                 )
         
         final_label = f"cf{n-2}" if n > 1 else "a0"
