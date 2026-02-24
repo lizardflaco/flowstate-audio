@@ -14,8 +14,94 @@ from pathlib import Path
 from dataclasses import dataclass
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
-import cgi
 import uuid
+
+# Python 3.13+ compatibility - cgi module removed
+try:
+    import cgi
+except ImportError:
+    # Minimal cgi replacement for multipart parsing
+    class FieldStorage:
+        def __init__(self, fp=None, headers=None, environ=None):
+            self.fp = fp
+            self.headers = headers
+            self.environ = environ
+            self._data = {}
+            self._files = {}
+            
+        def __getitem__(self, key):
+            return self._files.get(key) or self._data.get(key)
+        
+        def getvalue(self, key, default=None):
+            return self._data.get(key, default)
+        
+        def parse(self):
+            content_type = self.headers.get('Content-Type', '')
+            if not content_type.startswith('multipart/form-data'):
+                return
+            
+            # Parse boundary
+            boundary = None
+            for part in content_type.split(';'):
+                if 'boundary=' in part:
+                    boundary = part.split('=', 1)[1].strip('"')
+                    break
+            
+            if not boundary:
+                return
+            
+            # Read body
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.fp.read(content_length)
+            
+            # Split on boundary
+            boundary_bytes = ('--' + boundary).encode()
+            parts = body.split(boundary_bytes)
+            
+            for part in parts[1:]:  # Skip first empty part
+                if b'--\r\n' in part or part.strip() == b'--':
+                    continue
+                
+                # Parse headers and content
+                header_end = part.find(b'\r\n\r\n')
+                if header_end == -1:
+                    continue
+                
+                headers = part[:header_end].decode('utf-8', errors='ignore')
+                content = part[header_end + 4:]
+                
+                # Remove trailing \r\n
+                if content.endswith(b'\r\n'):
+                    content = content[:-2]
+                
+                # Parse Content-Disposition
+                name = None
+                filename = None
+                for line in headers.split('\r\n'):
+                    if line.lower().startswith('content-disposition'):
+                        for item in line.split(';'):
+                            if 'name=' in item:
+                                name = item.split('=', 1)[1].strip('"')
+                            if 'filename=' in item:
+                                filename = item.split('=', 1)[1].strip('"')
+                
+                if name:
+                    if filename:
+                        # File upload
+                        self._files[name] = FileItem(filename, content)
+                    else:
+                        # Regular field
+                        self._data[name] = content.decode('utf-8', errors='ignore')
+    
+    class FileItem:
+        def __init__(self, filename, content):
+            self.filename = filename
+            self.content = content
+            import io
+            self.file = io.BytesIO(content)
+    
+    cgi = type(sys)('cgi')
+    cgi.FieldStorage = FieldStorage
 
 # Paths
 BASE_DIR = Path(__file__).parent
