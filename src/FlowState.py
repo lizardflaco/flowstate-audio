@@ -547,6 +547,15 @@ class AudioProcessor(QThread):
         self.stage_started.emit("exporting", f"Normalizing to {self.config.target_loudness_lufs} LUFS")
         self.emit_progress("Applying loudness normalization...", 50)
         
+        # Handle looping if enabled
+        if self.config.loop_mode and self.config.target_duration_minutes > 0:
+            current_duration = self._get_audio_duration(final_audio)
+            target_duration = self.config.target_duration_minutes * 60
+            
+            if current_duration < target_duration:
+                self.emit_progress(f"Looping audio from {current_duration/60:.1f}min to {self.config.target_duration_minutes:.1f}min...", 55)
+                final_audio = self._loop_audio(final_audio, target_duration)
+        
         audio_export = self._export_audio(final_audio)
         results["audio_path"] = audio_export
         
@@ -736,6 +745,36 @@ class AudioProcessor(QThread):
         
         # Copy the final mix
         shutil.copy2(audio_path, output)
+        return output
+    
+    def _get_audio_duration(self, audio_path: str) -> float:
+        """Get duration of audio file in seconds"""
+        probe_cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            audio_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        return float(result.stdout.strip())
+    
+    def _loop_audio(self, audio_path: str, target_duration: float) -> str:
+        """Loop audio to reach target duration with seamless transitions"""
+        output = str(TEMP_DIR / "looped.wav")
+        
+        # Use ffmpeg's loop filter with acrossfade for seamless looping
+        cmd = [
+            "ffmpeg", "-y",
+            "-stream_loop", "-1",  # Loop indefinitely
+            "-i", audio_path,
+            "-t", str(target_duration),
+            "-af", "afade=t=in:ss=0:d=0.5,afade=t=out:st=0:d=0.5",
+            "-c:a", "pcm_s24le",
+            output
+        ]
+        
+        subprocess.run(cmd, check=True, capture_output=True)
+        self.temp_files.append(output)
         return output
     
     def _create_video(self, audio_path: str) -> Optional[str]:
@@ -1313,6 +1352,63 @@ class FlowStateWindow(QMainWindow):
         name_layout.addWidget(self.project_name, 1)
         layout.addLayout(name_layout)
         
+        # Loop settings
+        loop_group = QGroupBox("Loop Settings")
+        loop_group.setStyleSheet("""
+            QGroupBox {
+                color: #8B5CF6;
+                font-weight: 600;
+                border: 1px solid #1e1e2e;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 12px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 8px;
+            }
+        """)
+        
+        loop_layout = QVBoxLayout(loop_group)
+        
+        # Loop checkbox
+        self.loop_checkbox = QCheckBox("Enable Looping")
+        self.loop_checkbox.setChecked(True)
+        self.loop_checkbox.setStyleSheet("color: #e8e8f0; font-size: 14px;")
+        loop_layout.addWidget(self.loop_checkbox)
+        
+        # Hours input
+        hours_layout = QHBoxLayout()
+        hours_label = QLabel("Target Duration:")
+        hours_label.setStyleSheet("color: #9ca3af;")
+        
+        self.loop_hours = QDoubleSpinBox()
+        self.loop_hours.setRange(0.5, 24)
+        self.loop_hours.setValue(8)
+        self.loop_hours.setDecimals(1)
+        self.loop_hours.setSuffix(" hours")
+        self.loop_hours.setStyleSheet("""
+            QDoubleSpinBox {
+                background-color: #1e1e2e;
+                color: #e8e8f0;
+                border: 1px solid #2d2d3d;
+                border-radius: 6px;
+                padding: 8px;
+            }
+        """)
+        
+        hours_layout.addWidget(hours_label)
+        hours_layout.addWidget(self.loop_hours)
+        hours_layout.addStretch()
+        loop_layout.addLayout(hours_layout)
+        
+        loop_tip = QLabel("💡 The sequence will repeat until it reaches the target duration")
+        loop_tip.setStyleSheet("color: #6b7280; font-size: 11px;")
+        loop_layout.addWidget(loop_tip)
+        
+        layout.addWidget(loop_group)
+        
         layout.addStretch()
         return page
     
@@ -1856,6 +1952,10 @@ class FlowStateWindow(QMainWindow):
         
         # Gather configuration
         self.config.project_name = self.project_name.text() or "Untitled"
+        
+        # Loop settings
+        self.config.loop_mode = self.loop_checkbox.isChecked()
+        self.config.target_duration_minutes = self.loop_hours.value() * 60
         
         # Binaural settings
         self.config.binaural_preset = self.preset_combo.currentData()
