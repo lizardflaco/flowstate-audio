@@ -235,12 +235,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             <div class="card">
                 <div class="drop-zone" id="dropZone">
                     <div class="drop-zone-icon">📁</div>
-                    <p><strong>Drop audio files here</strong> or click to browse</p>
+                    <p><strong>Click here to upload</strong> or drag & drop audio files</p>
                     <p style="color: #6b7280; font-size: 14px; margin-top: 8px;">
-                        Supports: MP3, WAV, FLAC, M4A, AAC
+                        Supports: MP3, WAV, FLAC, M4A, AAC, OGG
                     </p>
-                    <input type="file" id="fileInput" multiple accept="audio/*" style="display: none;">
                 </div>
+                <input type="file" id="fileInput" multiple accept="audio/*,.mp3,.wav,.flac,.m4a,.aac,.ogg" style="display: none;">
                 <div class="file-list" id="fileList"></div>
             </div>
             
@@ -309,7 +309,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         const form = document.getElementById('uploadForm');
         let files = [];
         
-        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('click', (e) => {
+            // Prevent triggering if clicking on the file input itself
+            if (e.target !== fileInput) {
+                fileInput.click();
+            }
+        });
         
         dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
@@ -331,7 +336,12 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         });
         
         function handleFiles(fileList) {
-            files = Array.from(fileList).filter(f => f.type.startsWith('audio/'));
+            console.log('handleFiles called with:', fileList.length, 'files');
+            files = Array.from(fileList).filter(f => {
+                console.log('File:', f.name, 'Type:', f.type);
+                return f.type.startsWith('audio/') || f.name.match(/\.(mp3|wav|flac|m4a|aac|ogg)$/i);
+            });
+            console.log('Filtered files:', files.length);
             updateFileList();
         }
         
