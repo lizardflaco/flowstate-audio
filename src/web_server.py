@@ -441,7 +441,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
 
 class MultipartParser:
-    """Production-ready multipart form data parser"""
+    """Production-ready multipart form data parser - FIXED FOR MULTIPLE FILES"""
     
     def __init__(self, fp, headers):
         self.fp = fp
@@ -472,26 +472,34 @@ class MultipartParser:
         
         body = self.fp.read(content_length)
         
-        # Parse parts
+        # Parse parts - handle different line endings
         boundary_bytes = ('--' + boundary).encode()
         parts = body.split(boundary_bytes)
         
         for part in parts:
             part = part.strip()
-            if not part or part == b'--':
+            if not part or part == b'--' or part == b'--\r\n' or part == b'--\n':
                 continue
             
-            # Find header/content separator
+            # Find header/content separator - handle both \r\n and \n
             header_end = part.find(b'\r\n\r\n')
             if header_end == -1:
-                continue
+                header_end = part.find(b'\n\n')
+                if header_end == -1:
+                    continue
+                header_end += 2  # Account for single \n\n
+            else:
+                header_end += 4  # Account for \r\n\r\n
             
             headers = part[:header_end].decode('utf-8', errors='ignore')
-            content = part[header_end + 4:]
+            content = part[header_end:]
             
-            # Clean trailing newlines
-            if content.endswith(b'\r\n'):
-                content = content[:-2]
+            # Clean trailing newlines and boundary markers
+            content = content.rstrip(b'\r\n')
+            content = content.rstrip(b'\n')
+            content = content.rstrip(b'--')
+            content = content.rstrip(b'\r\n')
+            content = content.rstrip(b'\n')
             
             # Parse Content-Disposition
             name = None
@@ -506,16 +514,28 @@ class MultipartParser:
                             filename = item[9:].strip('"')
             
             if name:
-                if filename:
-                    self.files[name] = {'filename': filename, 'content': content}
+                if filename and filename != '':
+                    # File upload - store in list for multiple files
+                    if name not in self.files:
+                        self.files[name] = []
+                    self.files[name].append({'filename': filename, 'content': content})
                 else:
+                    # Regular field
                     self.data[name] = content.decode('utf-8', errors='ignore')
     
     def get(self, key, default=None):
         return self.data.get(key, default)
     
     def get_file(self, key):
-        return self.files.get(key)
+        """Get first file or list of files"""
+        files = self.files.get(key, [])
+        if len(files) == 1:
+            return files[0]
+        return files[0] if files else None
+    
+    def get_files(self, key):
+        """Get all files with this key"""
+        return self.files.get(key, [])
 
 
 # Global progress storage for polling
@@ -569,15 +589,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             # Parse multipart form
             parser = MultipartParser(self.rfile, self.headers)
             
-            # Validate files
+            # Validate files - FIXED to handle multiple files
             update_progress(10, 'Validating files...')
             uploaded_files = []
-            if 'audio' in parser.files:
-                file_info = parser.files['audio']
-                temp_path = UPLOADS_DIR / f"{uuid.uuid4()}_{file_info['filename']}"
-                with open(temp_path, 'wb') as f:
-                    f.write(file_info['content'])
-                uploaded_files.append(str(temp_path))
+            
+            # Get all files with 'audio' key
+            audio_files = parser.files.get('audio', [])
+            
+            for file_info in audio_files:
+                if file_info and file_info.get('filename'):
+                    temp_path = UPLOADS_DIR / f"{uuid.uuid4()}_{file_info['filename']}"
+                    with open(temp_path, 'wb') as f:
+                        f.write(file_info['content'])
+                    uploaded_files.append(str(temp_path))
             
             if not uploaded_files:
                 self.send_json({'success': False, 'error': 'No audio files uploaded', 'job_id': job_id})
