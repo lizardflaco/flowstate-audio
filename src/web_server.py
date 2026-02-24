@@ -371,6 +371,23 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             document.getElementById('error').style.display = 'none';
             submitBtn.disabled = true;
             
+            let jobId = null;
+            let pollInterval = null;
+            
+            // Start polling for progress
+            const startPolling = (id) => {
+                pollInterval = setInterval(async () => {
+                    try {
+                        const resp = await fetch(`/progress?id=${id}`);
+                        const data = await resp.json();
+                        document.getElementById('progressFill').style.width = data.percent + '%';
+                        document.getElementById('progressText').textContent = data.message;
+                    } catch (e) {
+                        // Ignore polling errors
+                    }
+                }, 500);
+            };
+            
             try {
                 const response = await fetch('/process', {
                     method: 'POST',
@@ -378,8 +395,15 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 });
                 
                 const result = await response.json();
+                jobId = result.job_id;
+                
+                // Start polling once we have job ID
+                if (jobId) {
+                    startPolling(jobId);
+                }
                 
                 if (result.success) {
+                    clearInterval(pollInterval);
                     document.getElementById('progressFill').style.width = '100%';
                     document.getElementById('progressText').textContent = 'Complete!';
                     
@@ -395,8 +419,16 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                         </p>
                     `;
                 } else {
+                    clearInterval(pollInterval);
                     throw new Error(result.error || 'Processing failed');
                 }
+            } catch (err) {
+                clearInterval(pollInterval);
+                document.getElementById('error').style.display = 'block';
+                document.getElementById('error').textContent = '❌ Error: ' + err.message;
+                submitBtn.disabled = false;
+            }
+        });
             } catch (err) {
                 document.getElementById('error').style.display = 'block';
                 document.getElementById('error').textContent = '❌ Error: ' + err.message;
@@ -486,6 +518,9 @@ class MultipartParser:
         return self.files.get(key)
 
 
+# Global progress storage for polling
+progress_store = {}
+
 class RequestHandler(BaseHTTPRequestHandler):
     """Production HTTP request handler"""
     
@@ -499,6 +534,14 @@ class RequestHandler(BaseHTTPRequestHandler):
         
         if path == '/' or path == '/index.html':
             self.send_html(HTML_TEMPLATE)
+        elif path == '/progress':
+            # Handle progress polling
+            query = parse_qs(parsed.query)
+            job_id = query.get('id', [None])[0]
+            if job_id and job_id in progress_store:
+                self.send_json(progress_store[job_id])
+            else:
+                self.send_json({'percent': 0, 'message': 'Waiting...'})
         elif path.startswith('/exports/'):
             self.serve_file(path[9:])
         else:
@@ -513,12 +556,21 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_error(404)
     
     def handle_process(self):
-        """Handle audio processing request"""
+        """Handle audio processing request with progress tracking"""
+        job_id = str(uuid.uuid4())
+        
+        def update_progress(percent, message):
+            progress_store[job_id] = {'percent': percent, 'message': message}
+        
         try:
+            # Initialize progress
+            update_progress(5, 'Receiving files...')
+            
             # Parse multipart form
             parser = MultipartParser(self.rfile, self.headers)
             
             # Validate files
+            update_progress(10, 'Validating files...')
             uploaded_files = []
             if 'audio' in parser.files:
                 file_info = parser.files['audio']
@@ -528,7 +580,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 uploaded_files.append(str(temp_path))
             
             if not uploaded_files:
-                self.send_json({'success': False, 'error': 'No audio files uploaded'})
+                self.send_json({'success': False, 'error': 'No audio files uploaded', 'job_id': job_id})
                 return
             
             # Get configuration
@@ -541,8 +593,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 'youtube_description': parser.get('youtube_description', ''),
             }
             
-            # Process audio
-            results = self.process_audio(uploaded_files, config)
+            # Process audio with progress updates
+            results = self.process_audio(uploaded_files, config, update_progress)
             
             # Cleanup uploads
             for f in uploaded_files:
@@ -552,20 +604,23 @@ class RequestHandler(BaseHTTPRequestHandler):
                     pass
             
             if results:
+                update_progress(100, 'Complete!')
                 self.send_json({
                     'success': True,
+                    'job_id': job_id,
                     'audio': f'/exports/{Path(results["audio"]).name}',
                     'video': f'/exports/{Path(results["video"]).name}',
                     'metadata': f'/exports/{Path(results["metadata"]).name}' if results.get('metadata') else None
                 })
             else:
-                self.send_json({'success': False, 'error': 'Processing failed'})
+                self.send_json({'success': False, 'error': 'Processing failed', 'job_id': job_id})
                 
         except Exception as e:
             import traceback
             print(f"Error: {e}")
             print(traceback.format_exc())
-            self.send_json({'success': False, 'error': str(e)})
+            update_progress(0, f'Error: {str(e)}')
+            self.send_json({'success': False, 'error': str(e), 'job_id': job_id})
     
     def process_audio(self, files, config):
         """Audio processing pipeline - PRODUCTION READY"""
